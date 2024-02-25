@@ -29,7 +29,7 @@ void cleanup();
 void sendMonitor();
 void doWifiAPScan();
 void doBuleScan();
-String getInput(const char *msg);
+String getInput(const char *msg,bool require = true);
 void checkSerial();
 
 IPAddress dst;
@@ -68,24 +68,29 @@ void setup() {
   if (needConfig) {
     pref.end();
     pref.begin("twESP32Config", false);
-    String in = "";
-    while (in == "") {
-      in = getInput("enter ssid:");
-    }
-    pref.putString("ssid", in);
-    in = getInput("enter password:");
-    pref.putString("password", in);
-    in = "";
-    while (in == "" || !dst.fromString(in.c_str())) {
-      in = getInput("enter syslog ip:");
-    }
-    pref.putString("syslog", in);
-    in = getInput("enter syslog port:");
-    if (in != "") {
-      int port = atoi(in.c_str());
-      if (port > 0 && port < 0xffff) {
-        pref.putInt("port", port);
+    String ssid_in  = getInput("enter ssid:");
+    String password_in = getInput("enter password:",false);
+    String syslog_in =  "";
+    do {
+      syslog_in = getInput("enter syslog ip:");
+    } while(!dst.fromString(syslog_in.c_str()));
+    int port_in = -1;
+    while(true) {
+      String in = getInput("enter syslog port:",false);
+      if (in == "") {
+        break;
       }
+      int p = atoi(in.c_str());
+      if (p > 0 && p < 0xffff) {
+        port_in = p;
+        break;
+      }
+    }
+    pref.putString("ssid", ssid_in);
+    pref.putString("password", password_in);
+    pref.putString("syslog", syslog_in);
+    if (port_in > 0 && port_in < 0xffff) {
+      pref.putInt("port", port_in);
     }
     pref.putBool("config", false);
   }
@@ -407,14 +412,31 @@ std::string getTimeStamp() {
 }
 
 // Input line form serial
-String getInput(const char *msg) {
+String getInput(const char *msg,bool require) {
   String in = "";
-  while (in == "") {
+  do {
     Serial.println(msg);
     while (Serial.available() < 1);
     in = Serial.readStringUntil('\n');
+    in.trim();
     Serial.println(in.c_str());
+  } while( in == "" && require);
+  if( in == "cancel") {
+    pref.begin("twESP32Config", false);
+    pref.putBool("config", false);
+    pref.end();
+    Serial.printf("%s setup cancel and restart now\n",getTimeStamp().c_str());
+    delay(1000);
+    ESP.restart();
   }
+  if( in == "clear!") {
+    pref.begin("twESP32Config", false);
+    pref.clear();
+    pref.end();
+    Serial.printf("%s config clear and restart now\n",getTimeStamp().c_str());
+    delay(1000);
+    ESP.restart();
+  } 
   return in;
 }
 
