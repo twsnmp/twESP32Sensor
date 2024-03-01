@@ -1,0 +1,41 @@
+version: '3'
+
+vars:
+  VERSION: v1.0.0
+  COMMIT:
+    sh: git rev-parse --short HEAD
+
+tasks:
+  default:
+    cmds:
+      - task: windows
+      - task: mac
+      - task: copy
+      - task: merge
+      - task: pack
+  windows:
+    cmds:
+      - mkdir -p build
+      - mkdir -p ../dist
+      - GOOS=windows GOARCH=amd64 go build -o build/twESP32Setup.exe -ldflags "-s -w -X main.version={{.VERSION}} -X main.commit={{.COMMIT}}"
+  mac:
+    cmds:
+      - GOSO=darwin GOARCH=amd64 go build -o build/twESP32Setup -ldflags "-s -w -X main.version={{.VERSION}} -X main.commit={{.COMMIT}}"
+  merge:
+    dir: ./build
+    cmds:
+      - ./twESP32Setup merge
+  copy:
+    cmds:
+      - cp ../README.md  build/
+      - cp ../LICENSE   build/
+      - cp -a  esptool/*  build/
+      - cp -a ../twESP32Sensor/build/esp32.esp32.esp32wroverkit/*.bin build/
+      - cp -a ../twM5StickCP2Sensor/build/m5stack.esp32.m5stack_stickc_plus2/*.bin build/
+  pack:
+    cmds:
+      - zip -j ../dist/twESP32Sensor.zip build/*
+  clean:
+    cmds:
+      - rm -rf build/*
+      - rm -rf ../dist/*

@@ -51,6 +51,7 @@ int syslog_port = 514;
 BLEScan *pBLEScan;
 Preferences pref;
 
+int retention = 3600;
 std::map<std::string, std::unique_ptr<BlueDevice>> blueDeviceMap;
 std::map<std::string, std::unique_ptr<WifiAPInfo>> wifiApInfoMap;
 
@@ -64,6 +65,7 @@ int omronCount = 0;
 int switchBotCount = 0;
 float cpu = 0.0;
 float mem = 0.0;
+float psram = 0.0;
 
 bool IRAM_ATTR idleHook(void) {
   idle++;
@@ -72,11 +74,23 @@ bool IRAM_ATTR idleHook(void) {
 
 void setup() {
   Serial.begin(115200);
+  Serial.printf("twM5StickCP2Sensor v%s\n", VERSION);
+
+  if (psramInit()) {
+    Serial.println("\nPSRAM is correctly initialized");
+  } else {
+    Serial.println("\nPSRAM does not work");
+    retention = 300;
+  }
+  Serial.printf("Total heap: %d\n", ESP.getHeapSize());
+  Serial.printf("Free heap: %d\n", ESP.getFreeHeap());
+  Serial.printf("Total PSRAM: %d\n", ESP.getPsramSize());
+  Serial.printf("Free PSRAM: %d\n", ESP.getFreePsram());
+
   esp_register_freertos_idle_hook_for_cpu(&idleHook, 0);
   esp_register_freertos_idle_hook_for_cpu(&idleHook, 1);
   M5.begin();
   updateLCD(STATE_START);
-  Serial.printf("twM5StickCP2Sensor v%s\n", VERSION);
   Serial.println("setup start");
   pref.begin("twESP32Config", true);
   bool needConfig = pref.getBool("config", true);
@@ -361,10 +375,9 @@ void doWifiAPScan() {
   }
 }
 
-int retention = 24;
 // cleanup old info
 void cleanup() {
-  time_t th = ntp.getEpochTime() - 3600 * retention;
+  time_t th = ntp.getEpochTime() - retention;
   auto itb = blueDeviceMap.begin();
   int delCountBlue = 0;
   while (itb != blueDeviceMap.end()) {
@@ -391,9 +404,9 @@ void cleanup() {
     Serial.printf("%s delete device blue=%d wifi=%d\n",getTimeStamp().c_str(),delCountBlue,delCountWifi);
   }
   int free = ESP.getFreeHeap();
-  if (free < 1024 * 20 && retention > 1) {
+  if (free < 1024 * 20 && retention > 120) {
     Serial.printf("%s dec retention=%d\n",getTimeStamp().c_str(), retention);
-    retention--;
+    retention-=10;
   }
 }
 
@@ -401,23 +414,27 @@ void cleanup() {
 void sendMonitor() {
   uint32_t free = ESP.getFreeHeap();
   uint32_t total = ESP.getHeapSize();
+  uint32_t psram_total = ESP.getPsramSize();
+  uint32_t psram_free = ESP.getFreePsram();
   cpu = 100.0 - (100.0 * idle) / tick;
   mem = total > 0 ? (100.0 - (100.0 * free) / total) : 0.0;
+  psram = psram_total > 0 ? (100.0 - (100.0 * psram_free) / psram_total) : 0.0;
+  int  blue = blueDeviceMap.size();
+  int  wifi = wifiApInfoMap.size();
   tick = 0;
   idle = 0;
   AsyncUDPMessage msg;
 
-  msg.printf("<%d>%s %s twESP32Sensor: count=%d,total=%d,free=%d,min=%d,mem=%.2f,cpu=%.2f", 21 * 8 + 6, getTimeStamp().c_str(), WiFi.localIP().toString().c_str(),
+  msg.printf("<%d>%s %s twESP32Sensor: count=%d,total=%d,free=%d,min=%d,mem=%.2f,cpu=%.2f,psram=%.2f,blue=%d,wifi=%d", 21 * 8 + 6, getTimeStamp().c_str(), WiFi.localIP().toString().c_str(),
              count,
              total,
              free,
              ESP.getMinFreeHeap(),
-             mem,
-             cpu);
+             mem,cpu,psram,blue,wifi);
   syslog.sendTo(msg, syslog_dst, syslog_port);
   tick = 0;
   idle = 0;
-  Serial.printf("%s monitor count=%d cpu=%.2f mem=%.2f\n",getTimeStamp().c_str(),count,cpu,mem);
+  Serial.printf("%s monitor count=%d cpu=%.2f mem=%.2f psram=%.2f blue=%d,wifi=%d\n",getTimeStamp().c_str(),count,cpu,mem,psram,blue,wifi);
   updateLCD(STATE_READY);
 }
 
@@ -516,10 +533,10 @@ void updateLCD(int state) {
   M5.Lcd.setTextColor(GREEN);
 
   M5.Lcd.setCursor(5, 84);
-  M5.Lcd.printf("bledev:%d(omron=%d,swb=%d)",blueCount,omronCount,switchBotCount);
+  M5.Lcd.printf("bledev:t=%d,l=%d,o=%d,s=%d",blueDeviceMap.size(),blueCount,omronCount,switchBotCount);
   M5.Lcd.setCursor(5, 100);
-  M5.Lcd.printf("wifiap:%d",wifiAPCount);
+  M5.Lcd.printf("wifiap:t=%d,l=%d",wifiApInfoMap.size(),wifiAPCount);
 
   M5.Lcd.setCursor(5, 116);
-  M5.Lcd.printf("mon   :cpu=%.2f%%,mem=%.2f%%",cpu,mem);
+  M5.Lcd.printf("res   :cpu=%.1f%%,mem=%.1f%%,psr=%.1f%%",cpu,mem,psram);
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -23,6 +24,13 @@ var password = ""
 var syslogIP = ""
 var m5stick = false
 var syslogPort = 0
+var mode = &serial.Mode{
+	BaudRate: 115200,
+	InitialStatusBits: &serial.ModemOutputBits{
+		RTS: true,
+		DTR: true,
+	},
+}
 
 func init() {
 	flag.StringVar(&esptool, "esptool", "", "path to esptool")
@@ -33,6 +41,22 @@ func init() {
 	flag.IntVar(&syslogPort, "syslogPort", 514, "syslog dst port")
 	flag.BoolVar(&m5stick, "m5", false, "M5StickC Plus 2")
 	flag.Parse()
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s [options...] command\n%s", os.Args[0],
+			`command
+  list : list setial ports
+  monitor : monitor serial port
+  config : config ESP32
+  write : write firmware to ESP32
+  clear : clear config
+  reset : reset ESP32
+  merge : merge M5SickC Plus2 firmare
+  version : show version
+
+options
+`)
+		flag.PrintDefaults()
+	}
 }
 
 func main() {
@@ -56,8 +80,17 @@ func main() {
 		if err := writeESP32(); err != nil {
 			log.Fatalln(err)
 		}
+	case "reset":
+		if err := resetESP32(); err != nil {
+			log.Fatalln(err)
+		}
+	case "merge":
+		if err := mergeM5Firm(); err != nil {
+			log.Fatalln(err)
+		}
+	case "version":
+		fmt.Printf("twESP32Setup %s(%s)\n", version, commit)
 	default:
-		fmt.Println("invalid command(list|monitor|config|write|clear)")
 		flag.Usage()
 	}
 }
@@ -76,9 +109,6 @@ func listSerialPort() {
 
 // monitor ESP32 form serial port
 func monitorESP32() error {
-	mode := &serial.Mode{
-		BaudRate: 115200,
-	}
 	p, err := serial.Open(serialPort, mode)
 	if err != nil {
 		return err
@@ -89,7 +119,7 @@ func monitorESP32() error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("'%s'\n", line)
+		fmt.Println(line)
 	}
 }
 
@@ -101,17 +131,18 @@ func configESP32() error {
 	if syslogIP == "" {
 		return fmt.Errorf("no syslog ip")
 	}
-	mode := &serial.Mode{
-		BaudRate: 115200,
-	}
 	p, err := serial.Open(serialPort, mode)
 	if err != nil {
 		return err
 	}
 	defer p.Close()
+	// Rest ESP32
+	p.SetDTR(false)
+	time.Sleep(time.Millisecond * 100)
+	p.SetDTR(true)
 	p.SetReadTimeout(time.Second * 10)
 	done := false
-	for i := 0; i < 5; {
+	for i := 0; i < 10; {
 		line, err := readLine(p)
 		if err != nil {
 			return err
@@ -120,6 +151,11 @@ func configESP32() error {
 		switch line {
 		case "":
 			i++
+			if i == 5 {
+				p.SetDTR(false)
+				time.Sleep(time.Millisecond * 100)
+				p.SetDTR(true)
+			}
 		case "enter ssid:":
 			p.Write([]byte(ssid + "\n"))
 		case "enter password:":
@@ -136,7 +172,6 @@ func configESP32() error {
 				}
 				time.Sleep(time.Second * 2)
 				p.Write([]byte("config\n"))
-				i++
 			}
 		}
 	}
@@ -145,14 +180,15 @@ func configESP32() error {
 
 // clear ESP32 config form serial port
 func clearESP32() error {
-	mode := &serial.Mode{
-		BaudRate: 115200,
-	}
 	p, err := serial.Open(serialPort, mode)
 	if err != nil {
 		return err
 	}
 	defer p.Close()
+	// Rest ESP32
+	p.SetDTR(false)
+	time.Sleep(time.Millisecond * 100)
+	p.SetDTR(true)
 	p.SetReadTimeout(time.Second * 10)
 	for i := 0; i < 5; {
 		line, err := readLine(p)
@@ -173,6 +209,19 @@ func clearESP32() error {
 			}
 		}
 	}
+	return nil
+}
+
+func resetESP32() error {
+	p, err := serial.Open(serialPort, mode)
+	if err != nil {
+		return err
+	}
+	defer p.Close()
+	// Rest ESP32
+	p.SetDTR(false)
+	time.Sleep(time.Millisecond * 100)
+	p.SetDTR(true)
 	return nil
 }
 
@@ -220,20 +269,22 @@ func writeESP32() error {
 		args = append(args, esptool)
 	}
 	/*
-	   ESP32
-	   --chip esp32 --port "/dev/cu.wchusbserial146440" --baud 115200
-	   --before default_reset --after hard_reset write_flash  -z --flash_mode dio
-	   --flash_freq 80m --flash_size 4MB
-	   0x1000 "/private/var/folders/v5/znj_wgb92xld9h4yjbtyhzwr0000gn/T/arduino/sketches/43AA7BA82766B413A228A093B0F982B3/twESP32Sensor.ino.bootloader.bin"
-	   0x8000 "/private/var/folders/v5/znj_wgb92xld9h4yjbtyhzwr0000gn/T/arduino/sketches/43AA7BA82766B413A228A093B0F982B3/twESP32Sensor.ino.partitions.bin"
-	   0xe000 "/Users/ymimacmini/Library/Arduino15/packages/esp32/hardware/esp32/2.0.14/tools/partitions/boot_app0.bin"
-	   0x10000 "/private/var/folders/v5/znj_wgb92xld9h4yjbtyhzwr0000gn/T/arduino/sketches/43AA7BA82766B413A228A093B0F982B3/twESP32Sensor.ino.bin"
+		   ESP32
+		   --chip esp32 --port "/dev/cu.wchusbserial146440" --baud 115200
+		   --before default_reset --after hard_reset write_flash  -z --flash_mode dio
+		   --flash_freq 80m --flash_size 4MB
+		   0x1000 "twESP32Sensor.ino.bootloader.bin"
+		   0x8000 "twESP32Sensor.ino.partitions.bin"
+		   0xe000 "boot_app0.bin"
+		   0x10000 "twESP32Sensor.ino.bin"
 
-	   M5Stick
-	   --chip esp32 --port "/dev/cu.wchusbserial57710041991" --baud 1500000
-	   --before default_reset --after hard_reset write_flash -z --flash_mode dio
-	   --flash_freq 80m --flash_size 8MB
-	   0x10000 "/private/var/folders/v5/znj_wgb92xld9h4yjbtyhzwr0000gn/T/arduino/sketches/B8728CE2975CDDA79B8A77C0D5308567/twM5StickCP2Sensor.ino.bin"
+			M5Stick
+			--chip esp32 --port "/dev/cu.wchusbserial57710041991" --baud 1500000  --before default_reset --after hard_reset
+			write_flash  -z --flash_mode dio --flash_freq 80m --flash_size 8MB
+			0x1000 "twM5StickCP2Sensor.ino.bootloader.bin"
+			0x8000 "twM5StickCP2Sensor.ino.partitions.bin"
+			0xe000 "boot_app0.bin"
+			0x10000 "twM5StickCP2Sensor.ino.bin"
 	*/
 
 	args = append(args, "--chip")
@@ -260,6 +311,12 @@ func writeESP32() error {
 	if m5stick {
 		args = append(args, "--flash_size")
 		args = append(args, "8MB")
+		args = append(args, "0x1000")
+		args = append(args, "./twM5StickCP2Sensor.ino.bootloader.bin")
+		args = append(args, "0x8000")
+		args = append(args, "./twM5StickCP2Sensor.ino.partitions.bin")
+		args = append(args, "0xe000")
+		args = append(args, "./boot_app0.bin")
 		args = append(args, "0x10000")
 		args = append(args, "./twM5StickCP2Sensor.ino.bin")
 	} else {
@@ -316,4 +373,62 @@ func findESPTool() string {
 		return p
 	}
 	return ""
+}
+
+// merge M5Stick firmware to M5Burner
+func mergeM5Firm() error {
+	if esptool == "" {
+		esptool = findESPTool()
+		if esptool == "" {
+			return fmt.Errorf("esptool not found")
+		}
+	}
+	name := esptool
+	args := []string{}
+	/*
+		   M5Stick
+		 	--chip esp32 --port "/dev/cu.wchusbserial57710041991" --baud 1500000  --before default_reset --after hard_reset
+			write_flash  -z --flash_mode dio --flash_freq 80m --flash_size 8MB
+			0x1000 "twM5StickCP2Sensor.ino.bootloader.bin"
+			0x8000 "twM5StickCP2Sensor.ino.partitions.bin"
+			0xe000 "boot_app0.bin"
+			0x10000 "twM5StickCP2Sensor.ino.bin"
+
+	*/
+
+	args = append(args, "--chip")
+	args = append(args, "esp32")
+	args = append(args, "merge_bin")
+	args = append(args, "-o")
+	args = append(args, "twM5StickCP2Sensor.bin")
+	args = append(args, "--flash_mode")
+	args = append(args, "dio")
+	args = append(args, "--flash_size")
+	args = append(args, "8MB")
+	args = append(args, "0x1000")
+	args = append(args, "./twM5StickCP2Sensor.ino.bootloader.bin")
+	args = append(args, "0x8000")
+	args = append(args, "./twM5StickCP2Sensor.ino.partitions.bin")
+	args = append(args, "0xe000")
+	args = append(args, "./boot_app0.bin")
+	args = append(args, "0x10000")
+	args = append(args, "./twM5StickCP2Sensor.ino.bin")
+	log.Println(name, args)
+	cmd := exec.Command(name, args...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return err
+	}
+	err = cmd.Start()
+	if err != nil {
+		return err
+	}
+	go dumpOutput(stdout)
+	go dumpOutput(stderr)
+	cmd.Wait()
+	return nil
 }

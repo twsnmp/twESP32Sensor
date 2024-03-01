@@ -42,6 +42,7 @@ WiFiClass wifi;
 BLEScan *pBLEScan;
 Preferences pref;
 
+int retention = 3600;
 std::map<std::string, std::unique_ptr<BlueDevice>> blueDeviceMap;
 std::map<std::string, std::unique_ptr<WifiAPInfo>> wifiApInfoMap;
 
@@ -56,12 +57,24 @@ bool IRAM_ATTR idleHook(void) {
 
 void setup() {
   Serial.begin(115200);
+  Serial.printf("twESP32Sensor %s\n", VERSION);
+
+  if (psramInit()) {
+    Serial.println("\nPSRAM is correctly initialized");
+  } else {
+    Serial.println("\nPSRAM does not work");
+    retention = 300;
+  }
+  Serial.printf("Total heap: %d\n", ESP.getHeapSize());
+  Serial.printf("Free heap: %d\n", ESP.getFreeHeap());
+  Serial.printf("Total PSRAM: %d\n", ESP.getPsramSize());
+  Serial.printf("Free PSRAM: %d\n", ESP.getFreePsram());
+
   pinMode(PIN_LED, OUTPUT);
   delay(2000);
   esp_register_freertos_idle_hook_for_cpu(&idleHook, 0);
   esp_register_freertos_idle_hook_for_cpu(&idleHook, 1);
 
-  Serial.printf("twESP32Sensor %s\n", VERSION);
   Serial.println("setup start");
   pref.begin("twESP32Config", true);
   bool needConfig = pref.getBool("config", true);
@@ -340,10 +353,9 @@ void doWifiAPScan() {
   }
 }
 
-int retention = 24;
 // cleanup old info
 void cleanup() {
-  time_t th = ntp.getEpochTime() - 3600 * retention;
+  time_t th = ntp.getEpochTime() - retention;
   auto itb = blueDeviceMap.begin();
   int delCountBlue = 0;
   while (itb != blueDeviceMap.end()) {
@@ -370,33 +382,39 @@ void cleanup() {
     Serial.printf("%s delete device blue=%d wifi=%d\n",getTimeStamp().c_str(),delCountBlue,delCountWifi);
   }
   int free = ESP.getFreeHeap();
-  if (free < 1024 * 20 && retention > 1) {
+  if (free < 1024 * 20 && retention > 120) {
     Serial.printf("%s dec retention=%d\n",getTimeStamp().c_str(), retention);
-    retention--;
+    retention-=10;
   }
 }
 
 // send monitor
 void sendMonitor() {
   uint32_t free = ESP.getFreeHeap();
+  uint32_t psram_total = ESP.getPsramSize();
+  uint32_t psram_free = ESP.getFreePsram();
   uint32_t total = ESP.getHeapSize();
   float cpu = 100.0 - (100.0 * idle) / tick;
   float mem = total > 0 ? (100.0 - (100.0 * free) / total) : 0.0;
+  float psram = psram_total > 0 ? (100.0 - (100.0 * psram_free) / psram_total) : 0.0;
+  int  blue = blueDeviceMap.size();
+  int  wifi = wifiApInfoMap.size();
   tick = 0;
   idle = 0;
   AsyncUDPMessage msg;
 
-  msg.printf("<%d>%s %s twESP32Sensor: count=%d,total=%d,free=%d,min=%d,mem=%.2f,cpu=%.2f", 21 * 8 + 6, getTimeStamp().c_str(), WiFi.localIP().toString().c_str(),
+  msg.printf("<%d>%s %s twESP32Sensor: count=%d,total=%d,free=%d,min=%d,mem=%.2f,cpu=%.2f,psram=%.2f,blue=%d,wifi=%d",
+             21 * 8 + 6, getTimeStamp().c_str(), WiFi.localIP().toString().c_str(),
              count,
              total,
              free,
              ESP.getMinFreeHeap(),
              mem,
-             cpu);
+             cpu,psram,blue,wifi);
   syslog.sendTo(msg, dst, port);
   tick = 0;
   idle = 0;
-  Serial.printf("%s monitor count=%d cpu=%.2f mem=%.2f\n",getTimeStamp().c_str(),count,cpu,mem);
+  Serial.printf("%s monitor count=%d cpu=%.2f mem=%.2f psram=%.2f blue=%d wifi=%d\n",getTimeStamp().c_str(),count,cpu,mem,psram,blue,wifi);
 }
 
 // Utils

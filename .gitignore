@@ -24,10 +24,10 @@
 *.lib
 
 # Executables
-*.exe
 *.out
 *.app
 
 .vscode/
 
 */build/
+dist/
